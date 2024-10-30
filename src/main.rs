@@ -1,12 +1,45 @@
+extern crate flate2;
+
 use std::io::{Read, Result};
+use std::process::Command;
 use std::{
     collections::BTreeMap,
     fs::{read_dir, File},
 };
 
+use actix_multipart::form::tempfile::TempFile;
+use actix_multipart::form::MultipartForm;
+use actix_web::{get, post, App, HttpResponse, HttpServer, Responder};
 use lopdf::{Bookmark, Document, Object, ObjectId};
 
-fn main() -> Result<()> {
+#[actix_web::main]
+async fn main() -> Result<()> {
+    let _ = transform_pdf();
+    HttpServer::new(|| App::new().service(echo).service(process_pdf))
+        .bind(("0.0.0.0", 8080))
+        .unwrap()
+        .run()
+        .await
+}
+
+#[get("/echo")]
+async fn echo() -> impl Responder {
+    HttpResponse::Ok().body("ECHO")
+}
+
+#[derive(Debug, MultipartForm)]
+struct PdfFormData {
+    #[multipart(limit = "100MB")]
+    files: TempFile,
+}
+
+#[post("/api")]
+async fn process_pdf(MultipartForm(form): MultipartForm<PdfFormData>) -> impl Responder {
+    println!("{:?}", form);
+    HttpResponse::Ok().body("Recebido")
+}
+
+fn transform_pdf() -> Result<()> {
     let paths = read_dir("./input").unwrap();
 
     let mut documents: Vec<Document> = vec![];
@@ -177,18 +210,25 @@ fn main() -> Result<()> {
     // Set any Bookmarks to the First child if they are not set to a page
     document.adjust_zero_pages();
 
-    // Set all bookmarks to the PDF Object tree then set the Outlines to the Bookmark content map.
-    if let Some(n) = document.build_outline() {
-        if let Ok(x) = document.get_object_mut(catalog_object.0) {
-            if let Object::Dictionary(ref mut dict) = x {
-                dict.set("Outlines", Object::Reference(n));
-            }
-        }
-    }
-
     document.compress();
 
     document.save("merged.pdf").unwrap();
+
+    let _ = Command::new("gs")
+        .args(&[
+            "-sDEVICE=pdfwrite",
+            "-dCompatibilityLevel=1.4",
+            "-dPDFSETTINGS=/screen",
+            "-dNOPAUSE",
+            "-dQUIET",
+            "-dBATCH",
+            "-sOutputFile=compressed.pdf",
+            "merged.pdf",
+        ])
+        .output()
+        .expect("ERRO AO EXECUTAR O SCRIPT");
+
+    println!("COMPRESSED");
 
     Ok(())
 }
